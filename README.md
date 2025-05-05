@@ -166,6 +166,11 @@ Supported boards are: feather_nrf52840_express feather_nrf52840_express pca10056
 Makefile:90: *** BOARD not defined.  Stop
 ```
 
+```
+make BOARD=gauss_nrf52832 all combinehex
+openocd -c 'source [find interface/stlink.cfg]' -c 'transport select hla_swd' -c 'source [find target/nrf52.cfg]' -c 'init' -c 'halt' -c 'nrf5 mass_erase' -c 'program _build-gauss_nrf52832/gauss_nrf52832_bootloader-0.3.1-dirty_s132_6.1.1.hex verify' -c 'reset' -c 'exit'
+```
+
 ### Common makefile problems
 
 #### 1. `arm-none-eabi-gcc`: No such file or directory
