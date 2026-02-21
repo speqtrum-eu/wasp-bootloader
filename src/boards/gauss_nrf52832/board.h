@@ -39,7 +39,7 @@
 #define BUTTON_3           15
 #define BUTTON_PULL        NRF_GPIO_PIN_PULLDOWN
 #define BUTTON_ACTIVE      1
-#define BUTTON_ENABLE      15
+//#define BUTTON_ENABLE      15
 
 /*------------------------------------------------------------------*/
 /* UART
@@ -56,5 +56,7 @@
 #define BLEDIS_MANUFACTURER   "Pine64"
 #define BLEDIS_MODEL          "PineTime"
 #define BLEDIS_DEVICE_NAME    "PineDFU"
+
+#define SPI_FLASH_SS       5
 
 #endif // _GAUSS_NRF52832_H

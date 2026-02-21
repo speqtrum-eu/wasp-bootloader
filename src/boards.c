@@ -48,10 +48,17 @@ void st7789_state(int state);
 void st7789_teardown(void);
 #endif
 
-#ifdef SS1306_SPI_DISPLAY
-void ss1306_init(void);
-void ss1306_state(int state);
-void ss1306_teardown(void);
+#ifdef SSD1306_SPI_DISPLAY
+void ssd1306_init(void);
+void ssd1306_state(int state);
+void ssd1306_teardown(void);
+void ssd1306_command(uint8_t cmd);
+void ssd1306_data(uint8_t* data, size_t len);
+void ssd1306_clear(void);
+void ssd1306_display(void);
+void ssd1306_set_pixel(int16_t x, int16_t y, uint8_t color);
+void ssd1306_draw_char(int16_t x, int16_t y, char c);
+void ssd1306_draw_string(int16_t x, int16_t y, const char* str);
 #endif
 
 //------------- IMPLEMENTATION -------------//
@@ -126,8 +133,8 @@ void board_init(void)
   st7789_init();
 #endif
 
-#ifdef SS1306_SPI_DISPLAY
-  ss1306_init();
+#ifdef SSD1306_SPI_DISPLAY
+  ssd1306_init();
 #endif
 }
 
@@ -137,8 +144,8 @@ void board_teardown(void)
   st7789_teardown();
 #endif
 
-#ifdef SS1306_SPI_DISPLAY
-  ss1306_teardown();
+#ifdef SSD1306_SPI_DISPLAY
+  ssd1306_teardown();
 #endif
 
   // Disable systick, turn off LEDs
@@ -389,6 +396,9 @@ void led_state(uint32_t state)
 {
 #ifdef ST7789_SPI_DISPLAY
   st7789_state(state);
+#endif
+#ifdef SSD1306_SPI_DISPLAY
+  ssd1306_state(state);
 #endif
 }
 #endif
@@ -975,12 +985,13 @@ void st7789_teardown(void)
 
 void spi_init(void)
 {
-  nrf_gpio_pin_write(SPI_SCK, SPI_MODE >= 2);
-  nrf_gpio_cfg(SPI_SCK, NRF_GPIO_PIN_DIR_OUTPUT, NRF_GPIO_PIN_INPUT_CONNECT,
-               NRF_GPIO_PIN_NOPULL, NRF_GPIO_PIN_S0S1, NRF_GPIO_PIN_NOSENSE);
-  nrf_gpio_pin_clear(SPI_MOSI);
+  nrf_gpio_cfg_output(SPI_SCK);
   nrf_gpio_cfg_output(SPI_MOSI);
+  nrf_gpio_cfg_output(DISP_SS);
+  nrf_gpio_cfg_output(DISP_DC);
+  nrf_gpio_cfg_output(DISP_RESET);
 
+  nrf_gpio_pin_set(DISP_SS);
 
   nrf_spi_pins_set(SPIx, SPI_SCK, SPI_MOSI, NRF_SPI_PIN_NOT_CONNECTED);
   nrf_spi_frequency_set(SPIx, NRF_SPI_FREQ_8M);
@@ -998,29 +1009,36 @@ void spi_teardown(void)
   nrf_gpio_cfg_default(SPI_SCK);
 }
 
-void spi_write(const uint8_t *data, unsigned len)
-{
-  const uint8_t *endp = data + len;
+// void spi_write(const uint8_t *data, unsigned len)
+// {
+//   const uint8_t *endp = data + len;
+//
+//   /* paranoid... but worthwhile due to the havoc this could cause */
+//   nrf_spi_event_clear(SPIx, NRF_SPI_EVENT_READY);
+//
+//   /* send first character */
+//   nrf_spi_txd_set(SPIx, *data++);
+//
+//   /* TXD is double buffers so we can xmit and then poll for the event */
+//   while (data < endp) {
+//     nrf_spi_txd_set(SPIx, *data++);
+//
+//     while (!nrf_spi_event_check(SPIx, NRF_SPI_EVENT_READY)) {}
+//     nrf_spi_event_clear(SPIx, NRF_SPI_EVENT_READY);
+//     (void) nrf_spi_rxd_get(SPIx);
+//   }
+//
+//   /* wait for the final character */
+//   while (!nrf_spi_event_check(SPIx, NRF_SPI_EVENT_READY)) {}
+//   nrf_spi_event_clear(SPIx, NRF_SPI_EVENT_READY);
+//   (void) nrf_spi_rxd_get(SPIx);
+// }
 
-  /* paranoid... but worthwhile due to the havoc this could cause */
-  nrf_spi_event_clear(SPIx, NRF_SPI_EVENT_READY);
-
-  /* send first character */
-  nrf_spi_txd_set(SPIx, *data++);
-
-  /* TXD is double buffers so we can xmit and then poll for the event */
-  while (data < endp) {
-    nrf_spi_txd_set(SPIx, *data++);
-
-    while (!nrf_spi_event_check(SPIx, NRF_SPI_EVENT_READY)) {}
+uint8_t spi_transfer(uint8_t data) {
+    nrf_spi_txd_set(SPIx, data);
+    while (!nrf_spi_event_check(SPIx, NRF_SPI_EVENT_READY));
     nrf_spi_event_clear(SPIx, NRF_SPI_EVENT_READY);
-    (void) nrf_spi_rxd_get(SPIx);
-  }
-
-  /* wait for the final character */
-  while (!nrf_spi_event_check(SPIx, NRF_SPI_EVENT_READY)) {}
-  nrf_spi_event_clear(SPIx, NRF_SPI_EVENT_READY);
-  (void) nrf_spi_rxd_get(SPIx);
+    return nrf_spi_rxd_get(SPIx);
 }
 
 
@@ -1030,69 +1048,196 @@ void spi_write(const uint8_t *data, unsigned len)
 
 
 // Commands
-#define DISP_OFF        0xae
-#define DISP_ON         0xaf
-#define CONTRAST        0x81
-#define ENTIRE_ON       0xa4
-#define NORM_INV        0xa6
-#define MEM_ADDR        0x20
-#define COL_ADDR        0x21
-#define PAGE_ADDR       0x22
-#define DISP_START_LINE 0x40
-#define SEG_REMAP       0xa0
-#define MUX_RATIO       0xa8
-#define INTERNAL_IREF   0xad
-#define COM_OUT_DIR     0xc0
-#define DISP_OFFSET     0xd3
-#define COM_PIN_CFG     0xda
-#define DISP_CLK_DIV    0xd5
-#define PRECHARGE       0xd9
-#define VCOM_DESEL      0xdb
-#define CHARGE_PUMP     0x8d
-#define NOP             0xe3
+// #define DISP_OFF        0xae
+// #define DISP_ON         0xaf
+// #define CONTRAST        0x81
+// #define ENTIRE_ON       0xa4
+// #define NORM_INV        0xa6
+// #define MEM_ADDR        0x20
+// #define COL_ADDR        0x21
+// #define PAGE_ADDR       0x22
+// #define DISP_START_LINE 0x40
+// #define SEG_REMAP       0xa0
+// #define MUX_RATIO       0xa8
+// #define INTERNAL_IREF   0xad
+// #define COM_OUT_DIR     0xc0
+// #define DISP_OFFSET     0xd3
+// #define COM_PIN_CFG     0xda
+// #define DISP_CLK_DIV    0xd5
+// #define PRECHARGE       0xd9
+// #define VCOM_DESEL      0xdb
+// #define CHARGE_PUMP     0x8d
+// #define NOP             0xe3
+//
+// #define OLED_SETCONTRAST                              0x81
+// #define OLED_DISPLAYALLONRESUME                       0xA4
+// #define OLED_DISPLAYALLONIGNORE                       0xA5
+// #define OLED_DISPLAYNORMAL                            0xA6
+// #define OLED_DISPLAYINVERT                            0xA7
+// #define OLED_DISPLAYOFF                               0xAE
+// #define OLED_DISPLAYON                                0xAF
+// #define OLED_SETMEMORYMODE                            0x20
+// #define OLED_SETMEMORYMODE_HORIZONTAL                 0x00
+// #define OLED_SETMEMORYMODE_VERTICAL                   0x01
+// #define OLED_SETMEMORYMODE_PAGE                       0x02
+// #define OLED_SETCOLUMNADDR                            0x21
+// #define OLED_SETPAGEADDR                              0x22
+// #define OLED_SETSTARTLINE_ZERO                        0x40
+// #define OLED_SEGREMAPNORMAL                           0xA0
+// #define OLED_SEGREMAPINV                              0xA1
+// #define OLED_SETMULTIPLEX                             0xA8
+// #define OLED_COMSCANINC                               0xC0
+// #define OLED_COMSCANDEC                               0xC8
+// #define OLED_SETDISPLAYOFFSET                         0xD3
+// #define OLED_SETCOMPINS                               0xDA
+// #define OLED_SETDISPLAYCLOCKDIV                       0xD5
+// #define OLED_SETPRECHARGE                             0xD9
+// #define OLED_SETVCOMDESELECT                          0xDB
+// #define OLED_NOP                                      0xE3
+// #define OLED_CHARGEPUMP                               0x8D
+// #define OLED_CHARGEPUMP_ON                            0x14
+// #define OLED_CHARGEPUMP_OFF                           0x10
+//
+// #define OLEDW_LCDWIDTH                              96
+// #define OLEDW_LCDHEIGHT                             39
+// #define OLEDW_DISPLAYOFF                            0xAE
+// #define OLEDW_SETDISPLAYCLOCKDIV                    0xD5
+// #define OLEDW_SETMULTIPLEX                          0xA8
+// #define OLEDW_SETDISPLAYOFFSET                      0xD3
+// #define OLEDW_SETSTARTLINE                          0x40
+// #define OLEDW_CHARGEPUMP                            0x8D
+// #define OLEDW_SETSEGMENTREMAP                       0xA1
+// #define OLEDW_SEGREMAP                              0xA0
+// #define OLEDW_COMSCANDEC                            0xC8
+// #define OLEDW_SETCOMPINS                            0xDA
+// #define OLEDW_SETCONTRAST                           0x81
+// #define OLEDW_SETPRECHARGE                          0xD9
+// #define OLEDW_SETVCOMDETECT                         0xDB
+// #define OLEDW_DISPLAYALLON_RESUME                   0xA4
+// #define OLEDW_NORMALDISPLAY                         0xA6
+// #define OLEDW_DISPLAYON                             0xAF
+// #define OLEDW_DISPLAYALLON                          0xA5
+// #define OLEDW_INVERTDISPLAY                         0xA7
+// #define OLEDW_SETLOWCOLUMN                          0x00
+// #define OLEDW_SETHIGHCOLUMN                         0x10
+// #define OLEDW_MEMORYMODE                            0x20
+// #define OLEDW_COLUMNADDR                            0x21
+// #define OLEDW_PAGEADDR                              0x22
+// #define OLEDW_COMSCANINC                            0xC0
+// #define OLEDW_EXTERNALVCC                           0x1
+// #define OLEDW_SWITCHCAPVCC                          0x2
+// #define OLEDW_ACTIVATE_SCROLL                       0x2F
+// #define OLEDW_DEACTIVATE_SCROLL                     0x2E
+// #define OLEDW_SET_VERTICAL_SCROLL_AREA              0xA3
+// #define OLEDW_RIGHT_HORIZONTAL_SCROLL               0x26
+// #define OLEDW_LEFT_HORIZONTAL_SCROLL                0x27
+// #define OLEDW_VERTICAL_AND_RIGHT_HORIZONTAL_SCROLL  0x29
+// #define OLEDW_VERTICAL_AND_LEFT_HORIZONTAL_SCROLL   0x2A
+// #define OLEDW_COMMAND  0x3C
+// #define OLEDW_DATA     0x3D
 
-#define OLED_SETCONTRAST                              0x81
-#define OLED_DISPLAYALLONRESUME                       0xA4
-#define OLED_DISPLAYALLONIGNORE                       0xA5
-#define OLED_DISPLAYNORMAL                            0xA6
-#define OLED_DISPLAYINVERT                            0xA7
-#define OLED_DISPLAYOFF                               0xAE
-#define OLED_DISPLAYON                                0xAF
-#define OLED_SETMEMORYMODE                            0x20
-#define OLED_SETMEMORYMODE_HORIZONTAL                 0x00
-#define OLED_SETMEMORYMODE_VERTICAL                   0x01
-#define OLED_SETMEMORYMODE_PAGE                       0x02
-#define OLED_SETCOLUMNADDR                            0x21
-#define OLED_SETPAGEADDR                              0x22
-#define OLED_SETSTARTLINE_ZERO                        0x40
-#define OLED_SEGREMAPNORMAL                           0xA0
-#define OLED_SEGREMAPINV                              0xA1
-#define OLED_SETMULTIPLEX                             0xA8
-#define OLED_COMSCANINC                               0xC0
-#define OLED_COMSCANDEC                               0xC8
-#define OLED_SETDISPLAYOFFSET                         0xD3
-#define OLED_SETCOMPINS                               0xDA
-#define OLED_SETDISPLAYCLOCKDIV                       0xD5
-#define OLED_SETPRECHARGE                             0xD9
-#define OLED_SETVCOMDESELECT                          0xDB
-#define OLED_NOP                                      0xE3
-#define OLED_CHARGEPUMP                               0x8D
-#define OLED_CHARGEPUMP_ON                            0x14
-#define OLED_CHARGEPUMP_OFF                           0x10
+#define SSD1306_SETCONTRAST         0x81
+#define SSD1306_DISPLAYALLON_RESUME 0xA4
+#define SSD1306_DISPLAYALLON        0xA5
+#define SSD1306_NORMALDISPLAY       0xA6
+#define SSD1306_INVERTDISPLAY       0xA7
+#define SSD1306_DISPLAYOFF          0xAE
+#define SSD1306_DISPLAYON           0xAF
+#define SSD1306_SETDISPLAYOFFSET    0xD3
+#define SSD1306_SETCOMPINS          0xDA
+#define SSD1306_SETVCOMDETECT       0xDB
+#define SSD1306_SETDISPLAYCLOCKDIV  0xD5
+#define SSD1306_SETPRECHARGE        0xD9
+#define SSD1306_SETMULTIPLEX        0xA8
+#define SSD1306_SETLOWCOLUMN        0x00
+#define SSD1306_SETHIGHCOLUMN       0x10
+#define SSD1306_SETSTARTLINE        0x40
+#define SSD1306_MEMORYMODE          0x20
+#define SSD1306_COLUMNADDR          0x21
+#define SSD1306_PAGEADDR            0x22
+#define SSD1306_COMSCANINC          0xC0
+#define SSD1306_COMSCANDEC          0xC8
+#define SSD1306_SEGREMAP            0xA0
+#define SSD1306_CHARGEPUMP          0x8D
 
+// Display Buffer (96x40 / 8 = 480 Bytes)
+static uint8_t display_buffer[DISPLAY_WIDTH * DISPLAY_HEIGHT / 8];
 
-struct ssd1306_cmd {
-  uint8_t cmd;
-  const uint8_t *data;
-  uint8_t len;
+// 5x7 Font (ASCII 32-90)
+static const uint8_t font5x7[][5] = {
+    {0x00, 0x00, 0x00, 0x00, 0x00}, // Space
+    {0x00, 0x00, 0x5F, 0x00, 0x00}, // !
+    {0x00, 0x07, 0x00, 0x07, 0x00}, // "
+    {0x14, 0x7F, 0x14, 0x7F, 0x14}, // #
+    {0x24, 0x2A, 0x7F, 0x2A, 0x12}, // $
+    {0x23, 0x13, 0x08, 0x64, 0x62}, // %
+    {0x36, 0x49, 0x55, 0x22, 0x50}, // &
+    {0x00, 0x05, 0x03, 0x00, 0x00}, // '
+    {0x00, 0x1C, 0x22, 0x41, 0x00}, // (
+    {0x00, 0x41, 0x22, 0x1C, 0x00}, // )
+    {0x14, 0x08, 0x3E, 0x08, 0x14}, // *
+    {0x08, 0x08, 0x3E, 0x08, 0x08}, // +
+    {0x00, 0x50, 0x30, 0x00, 0x00}, // ,
+    {0x08, 0x08, 0x08, 0x08, 0x08}, // -
+    {0x00, 0x60, 0x60, 0x00, 0x00}, // .
+    {0x20, 0x10, 0x08, 0x04, 0x02}, // /
+    {0x3E, 0x51, 0x49, 0x45, 0x3E}, // 0
+    {0x00, 0x42, 0x7F, 0x40, 0x00}, // 1
+    {0x42, 0x61, 0x51, 0x49, 0x46}, // 2
+    {0x21, 0x41, 0x45, 0x4B, 0x31}, // 3
+    {0x18, 0x14, 0x12, 0x7F, 0x10}, // 4
+    {0x27, 0x45, 0x45, 0x45, 0x39}, // 5
+    {0x3C, 0x4A, 0x49, 0x49, 0x30}, // 6
+    {0x01, 0x71, 0x09, 0x05, 0x03}, // 7
+    {0x36, 0x49, 0x49, 0x49, 0x36}, // 8
+    {0x06, 0x49, 0x49, 0x29, 0x1E}, // 9
+    {0x00, 0x36, 0x36, 0x00, 0x00}, // :
+    {0x00, 0x56, 0x36, 0x00, 0x00}, // ;
+    {0x08, 0x14, 0x22, 0x41, 0x00}, // <
+    {0x14, 0x14, 0x14, 0x14, 0x14}, // =
+    {0x00, 0x41, 0x22, 0x14, 0x08}, // >
+    {0x02, 0x01, 0x51, 0x09, 0x06}, // ?
+    {0x32, 0x49, 0x79, 0x41, 0x3E}, // @
+    {0x7E, 0x11, 0x11, 0x11, 0x7E}, // A
+    {0x7F, 0x49, 0x49, 0x49, 0x36}, // B
+    {0x3E, 0x41, 0x41, 0x41, 0x22}, // C
+    {0x7F, 0x41, 0x41, 0x22, 0x1C}, // D
+    {0x7F, 0x49, 0x49, 0x49, 0x41}, // E
+    {0x7F, 0x09, 0x09, 0x09, 0x01}, // F
+    {0x3E, 0x41, 0x49, 0x49, 0x7A}, // G
+    {0x7F, 0x08, 0x08, 0x08, 0x7F}, // H
+    {0x00, 0x41, 0x7F, 0x41, 0x00}, // I
+    {0x20, 0x40, 0x41, 0x3F, 0x01}, // J
+    {0x7F, 0x08, 0x14, 0x22, 0x41}, // K
+    {0x7F, 0x40, 0x40, 0x40, 0x40}, // L
+    {0x7F, 0x02, 0x0C, 0x02, 0x7F}, // M
+    {0x7F, 0x04, 0x08, 0x10, 0x7F}, // N
+    {0x3E, 0x41, 0x41, 0x41, 0x3E}, // O
+    {0x7F, 0x09, 0x09, 0x09, 0x06}, // P
+    {0x3E, 0x41, 0x51, 0x21, 0x5E}, // Q
+    {0x7F, 0x09, 0x19, 0x29, 0x46}, // R
+    {0x46, 0x49, 0x49, 0x49, 0x31}, // S
+    {0x01, 0x01, 0x7F, 0x01, 0x01}, // T
+    {0x3F, 0x40, 0x40, 0x40, 0x3F}, // U
+    {0x1F, 0x20, 0x40, 0x20, 0x1F}, // V
+    {0x3F, 0x40, 0x38, 0x40, 0x3F}, // W
+    {0x63, 0x14, 0x08, 0x14, 0x63}, // X
+    {0x07, 0x08, 0x70, 0x08, 0x07}, // Y
+    {0x61, 0x51, 0x49, 0x45, 0x43}, // Z
 };
 
+// struct ssd1306_cmd {
+//   uint8_t cmd;
+//   const uint8_t *data;
+//   uint8_t len;
+// };
+/*
 const static struct ssd1306_cmd ssd1306_init_data[] = {
   { OLED_DISPLAYOFF, NULL },
   { OLED_SETMEMORYMODE, (uint8_t *) "\x00", 1},
   { OLED_COMSCANDEC, NULL },
   { OLED_SETSTARTLINE_ZERO, NULL },
-  { OLED_SETCONTRAST, (uint8_t *) "\x7f", 1},
+  { OLED_SETCONTRAST, (uint8_t *) "\x10", 1},
   { OLED_SEGREMAPNORMAL, NULL},
   { OLED_DISPLAYINVERT, NULL},
   { OLED_SETMULTIPLEX, (uint8_t *) DISPLAY_HEIGHT - 1, 1},
@@ -1106,44 +1251,83 @@ const static struct ssd1306_cmd ssd1306_init_data[] = {
   { OLED_DISPLAYON, NULL },
   { NOP, NULL }
 };
+*/
+  // const static struct ssd1306_cmd ssd1306_init_data[] = {
+  // { DISP_OFF, NULL },
+  // { DISP_CLK_DIV,   (uint8_t *) "\x80",             1 },
+  // { MUX_RATIO,      (uint8_t *) "\x26",             1 },
+  // { DISP_OFFSET,    (uint8_t *) "\x00",             1 },
+  // { DISP_START_LINE, NULL },
+  // { CHARGE_PUMP,    (uint8_t *) "\x14",             1 },
+  // { SEG_REMAP, NULL },
+  // { COM_OUT_DIR, NULL },
+  // { COM_PIN_CFG,    (uint8_t *) "\x12",             1 },
+  // { CONTRAST,       (uint8_t *) "\xff",             1 },
+  // { PRECHARGE,      (uint8_t *) "\x25",             1 },
+  // { VCOM_DESEL,     (uint8_t *) "\x20",             1 },
+  // { ENTIRE_ON, NULL },
+  // { NORM_INV, NULL },
+  // { MEM_ADDR,       (uint8_t *) "\x10",             1 },
+//  { INTERNAL_IREF,  (uint8_t *) "\x30",             1 },
+  // { DISP_OFF, NULL },
+  // { NOP, NULL }
+
+//};
 /*
 const static struct ssd1306_cmd ssd1306_init_data[] = {
-  { DISP_OFF, NULL },
-  { DISP_CLK_DIV,   (uint8_t *) "\x80",             1 },
-  { MUX_RATIO,      (uint8_t *) DISPLAY_HEIGHT - 1, 1 },
-  { DISP_OFFSET,    (uint8_t *) "\x00",             1 },
-  { DISP_START_LINE, NULL },
-  { CHARGE_PUMP,    (uint8_t *) "\x14",             1 },
-  //{ SEG_REMAP, NULL },
-  //{ COM_OUT_DIR, NULL },
-  { COM_PIN_CFG,    (uint8_t *) "\x12",             1 },
-  { CONTRAST,       (uint8_t *) "\xff",             1 },
-  { PRECHARGE,      (uint8_t *) "\x22",             1 },
-  { VCOM_DESEL,     (uint8_t *) "\x20",             1 },
-  { ENTIRE_ON, NULL },
-  { NORM_INV, NULL },
-  { MEM_ADDR,       (uint8_t *) "\x10",             1 },
-  { INTERNAL_IREF,  (uint8_t *) "\x30",             1 },
-  { DISP_OFF, NULL },
+  { OLEDW_DISPLAYOFF, NULL },
+  { OLEDW_SETDISPLAYCLOCKDIV,   (uint8_t *) "\x80",             1 },
+  { OLEDW_SETMULTIPLEX,      (uint8_t *) "\x26", 1 },
+  { OLEDW_SETDISPLAYOFFSET,    (uint8_t *) "\x00",             1 },
+  { OLEDW_SETSTARTLINE, NULL },
+  { OLEDW_CHARGEPUMP,    (uint8_t *) "\x14",             1 },
+  //{ OLEDW_SEGREMAP, NULL },
+  { OLEDW_COMSCANDEC, NULL },
+  { OLEDW_SETCOMPINS,    (uint8_t *) "\x12",             1 },
+  { OLEDW_SETCONTRAST,       (uint8_t *) "\x01",             1 },
+  { OLEDW_SETPRECHARGE,      (uint8_t *) "\x25",             1 },
+  { OLEDW_SETVCOMDETECT,     (uint8_t *) "\x20",             1 },
+  { OLEDW_DISPLAYALLON_RESUME, NULL },
+  { OLEDW_NORMALDISPLAY, NULL },
+  //{ INTERNAL_IREF,  (uint8_t *) "\x30",             1 },
+  { OLEDW_MEMORYMODE, (uint8_t *) "\x10", 1},
+  { OLEDW_DISPLAYOFF, NULL },
   { NOP, NULL }
 };
 */
 
-static void ssd1306_send(uint8_t cmd, const uint8_t *data, unsigned len)
-{
-  nrf_gpio_pin_clear(DISP_SS);
+// static void ssd1306_send(uint8_t cmd, const uint8_t *data, unsigned len)
+// {
+//   nrf_gpio_pin_clear(DISP_SS);
+//
+//   if (cmd) {
+//     nrf_gpio_pin_clear(DISP_DC);
+//     spi_write(&cmd, 1);
+//   }
+//
+//   if (data) {
+//     nrf_gpio_pin_set(DISP_DC);
+//     spi_write(data, len);
+//   }
+//
+//   nrf_gpio_pin_set(DISP_SS);
+// }
 
-  if (cmd) {
-    nrf_gpio_pin_clear(DISP_DC);
-    spi_write(&cmd, 1);
-  }
+void ssd1306_command(uint8_t cmd) {
+    nrf_gpio_pin_clear(DISP_DC); // Command Mode
+    nrf_gpio_pin_clear(DISP_SS);  // CS aktiv
+    spi_transfer(cmd);
+    nrf_gpio_pin_set(DISP_SS);    // CS inaktiv
+}
 
-  if (data) {
-    nrf_gpio_pin_set(DISP_DC);
-    spi_write(data, len);
-  }
-
-  nrf_gpio_pin_set(DISP_SS);
+// Daten senden
+void ssd1306_data(uint8_t* data, size_t len) {
+    nrf_gpio_pin_set(DISP_DC);   // Data Mode
+    nrf_gpio_pin_clear(DISP_SS);  // CS aktiv
+    for (size_t i = 0; i < len; i++) {
+        spi_transfer(data[i]);
+    }
+    nrf_gpio_pin_set(DISP_SS);    // CS inaktiv
 }
 
 void ssd1306_state(int state)
@@ -1164,127 +1348,63 @@ void ssd1306_state(int state)
     return;
   }
 
-#if defined(_GAUSS_NRF52832_H)
-  // 1-bit RLE
-  static const uint8_t rle[] = {
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xf7, 0x39, 0xcf, 0xce, 0xcf, 0xff, 0x9f, 0x9f, 0xff, 0xff, 0xff, 0xff, 
-    0xf7, 0x3b, 0xa7, 0x96, 0x07, 0xfe, 0x4f, 0x2f, 0xff, 0xff, 0xff, 0xff, 0xf7, 0x1b, 0xf3, 0x3e, 
-    0x77, 0xfe, 0xee, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xf3, 0xdb, 0xc3, 0x9e, 0x73, 0xfc, 0xe7, 0x3f, 
-    0xff, 0xff, 0xff, 0xff, 0xfa, 0xd3, 0xb3, 0xe6, 0x73, 0x0c, 0xe7, 0xcf, 0xff, 0xff, 0xff, 0xff, 
-    0xf8, 0xc7, 0x33, 0xf2, 0x77, 0xfe, 0xef, 0xe7, 0xff, 0xff, 0xff, 0xff, 0xf8, 0xe7, 0x03, 0x26, 
-    0x07, 0xfe, 0x4e, 0x4f, 0xff, 0xff, 0xff, 0xff, 0xfd, 0xe7, 0x9b, 0x8e, 0x4f, 0xff, 0x3f, 0x1f, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xfe, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe, 
-    0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfc, 0xde, 0x79, 0xcf, 0x3e, 0x7f, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xf9, 0x1d, 0x39, 0xce, 0x5c, 0xbf, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xfb, 0x9f, 0x99, 0xcc, 0xf9, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xf3, 0x9e, 0x19, 0xce, 
-    0x7c, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xf3, 0x9d, 0x99, 0xcf, 0x9f, 0x3f, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xfb, 0x99, 0x99, 0xcf, 0xcf, 0x9f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xf8, 0x18, 0x1c, 0x0c, 0x99, 0x3f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfc, 0x9c, 0xde, 0x6e, 
-    0x3c, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x9f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xf8, 0x3f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xfc, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff
-  };
-  #else
-  // 1-bit RLE
-  const uint8_t rle[] = {
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xf7, 0x39, 0xcf, 0xce, 0xcf, 0xff, 0x9f, 0x9f, 0xff, 0xff, 0xff, 0xff, 
-    0xf7, 0x3b, 0xa7, 0x96, 0x07, 0xfe, 0x4f, 0x2f, 0xff, 0xff, 0xff, 0xff, 0xf7, 0x1b, 0xf3, 0x3e, 
-    0x77, 0xfe, 0xee, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xf3, 0xdb, 0xc3, 0x9e, 0x73, 0xfc, 0xe7, 0x3f, 
-    0xff, 0xff, 0xff, 0xff, 0xfa, 0xd3, 0xb3, 0xe6, 0x73, 0x0c, 0xe7, 0xcf, 0xff, 0xff, 0xff, 0xff, 
-    0xf8, 0xc7, 0x33, 0xf2, 0x77, 0xfe, 0xef, 0xe7, 0xff, 0xff, 0xff, 0xff, 0xf8, 0xe7, 0x03, 0x26, 
-    0x07, 0xfe, 0x4e, 0x4f, 0xff, 0xff, 0xff, 0xff, 0xfd, 0xe7, 0x9b, 0x8e, 0x4f, 0xff, 0x3f, 0x1f, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xfe, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe, 
-    0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfc, 0xde, 0x79, 0xcf, 0x3e, 0x7f, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xf9, 0x1d, 0x39, 0xce, 0x5c, 0xbf, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xfb, 0x9f, 0x99, 0xcc, 0xf9, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xf3, 0x9e, 0x19, 0xce, 
-    0x7c, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xf3, 0x9d, 0x99, 0xcf, 0x9f, 0x3f, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xfb, 0x99, 0x99, 0xcf, 0xcf, 0x9f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xf8, 0x18, 0x1c, 0x0c, 0x99, 0x3f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfc, 0x9c, 0xde, 0x6e, 
-    0x3c, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x9f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xf8, 0x3f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0xff, 0xff, 0xff, 
-    0xfc, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
-    0xff, 0xff, 0xff, 0xff
-  };
-  #endif
-
-  if (topclip && bottomclip) {
-    ssd1306_send(COL_ADDR,  (uint8_t *) "\x00\x59", 2);
-    ssd1306_send(PAGE_ADDR, (uint8_t *) "\x08\x18", 2);
+  // Text anzeigen
+  ssd1306_clear();
+  ssd1306_draw_string(0, 0, "PROJECT GAUSS");
+  ssd1306_draw_string(0, 10, "NRF52832 test");
+  if (bottomclip) {
+    ssd1306_draw_string(0, 30, "BLE NOT CONNECTED");
   }
-  else if (topclip) {
-    ssd1306_send(COL_ADDR,  (uint8_t *) "\x00\x59", 2);
-    ssd1306_send(PAGE_ADDR, (uint8_t *) "\x08\x26", 2);
+  if (topclip) {
+    ssd1306_draw_string(0, 20, "BLE UP");
   }
-  else if (bottomclip) {
-    ssd1306_send(COL_ADDR,  (uint8_t *) "\x00\x59", 2);
-    ssd1306_send(PAGE_ADDR, (uint8_t *) "\x00\x18", 2);
-  }
-  else {
-    ssd1306_send(COL_ADDR,  (uint8_t *) "\x00\x59", 2);
-    ssd1306_send(PAGE_ADDR, (uint8_t *) "\x00\x26", 2);
-  }
-
-  for (int i=0; i<sizeof(rle); i++) {
-    ssd1306_send(NOP, &rle[i], 1);
-  }
+  ssd1306_display();
 }
 
 
-void ssd1306_init(void)
-{
-  nrf_gpio_pin_set(DISP_SS);
-  nrf_gpio_cfg_output(DISP_SS);
-  spi_init();
+void ssd1306_init(void) {
+    spi_init();
 
-  nrf_gpio_cfg_output(DISP_DC);
+    // Hardware Reset
+    nrf_gpio_pin_set(DISP_RESET);
+    NRFX_DELAY_MS(1);
+    nrf_gpio_pin_clear(DISP_RESET);
+    NRFX_DELAY_MS(10);
+    nrf_gpio_pin_set(DISP_RESET);
+    NRFX_DELAY_MS(10);
 
-  /* deliver a reset */
-  nrf_gpio_pin_clear(DISP_RESET);
-  nrf_gpio_cfg_output(DISP_RESET);
-  NRFX_DELAY_MS(10);
-  nrf_gpio_pin_set(DISP_RESET);
-  NRFX_DELAY_MS(125);
+    // Initialisierungssequenz für 96x40
+    ssd1306_command(SSD1306_DISPLAYOFF);
+    ssd1306_command(SSD1306_SETDISPLAYCLOCKDIV);
+    ssd1306_command(0x80);
+    ssd1306_command(SSD1306_SETMULTIPLEX);
+    ssd1306_command(0x26);  // 40-1 = 0x27
+    ssd1306_command(SSD1306_SETDISPLAYOFFSET);
+    ssd1306_command(0x00);
+    ssd1306_command(SSD1306_SETSTARTLINE | 0x0);
+    ssd1306_command(SSD1306_CHARGEPUMP);
+    ssd1306_command(0x14);
+    ssd1306_command(SSD1306_MEMORYMODE);
+    ssd1306_command(0x00);
+    ssd1306_command(SSD1306_SEGREMAP | 0x0);
+    ssd1306_command(SSD1306_COMSCANINC);
+    ssd1306_command(SSD1306_SETCOMPINS);
+    ssd1306_command(0x12);
+    ssd1306_command(SSD1306_SETCONTRAST);
+    ssd1306_command(0x01);
+    ssd1306_command(SSD1306_SETPRECHARGE);
+    ssd1306_command(0xF1);
+    ssd1306_command(SSD1306_SETVCOMDETECT);
+    ssd1306_command(0x40);
+    ssd1306_command(SSD1306_DISPLAYALLON_RESUME);
+    ssd1306_command(SSD1306_NORMALDISPLAY);
+    ssd1306_command(SSD1306_DISPLAYON);
 
-  /* initialize the display */
-  for (const struct ssd1306_cmd *i = ssd1306_init_data; i->cmd != NOP; i++)
-    ssd1306_send(i->cmd, i->data, i->len);
+    ssd1306_clear();
+    ssd1306_draw_string(0, 0, "PROJECT GAUSS");
+    ssd1306_display();
 
-  /* draw the initial screen content. this will take ~116ms so, with the
-   * delay after the SLPOUT we will have complete the SLPOUT/SLPIN lock
-   * out period during the update.
-   */
-  //ssd1306_state(STATE_BOOTLOADER_STARTED);
-
-  //ssd1306_send(0xa5, NULL, 0);
-  /* enable the display */
-  //ssd1306_send(DISP_ON, NULL, 0);
+    ssd1306_state(STATE_BOOTLOADER_STARTED);
 }
 
 void ssd1306_teardown(void)
@@ -1313,4 +1433,57 @@ void wdt_init(void)
 
   // set it running
   nrf_wdt_task_trigger(NRF_WDT, NRF_WDT_TASK_START);
+}
+
+// Display löschen
+void ssd1306_clear(void) {
+    memset(display_buffer, 0, sizeof(display_buffer));
+}
+
+// Buffer zum Display senden
+void ssd1306_display(void) {
+    ssd1306_command(SSD1306_COLUMNADDR);
+    ssd1306_command(0);
+    ssd1306_command(DISPLAY_WIDTH - 1);  // 95 für 96 Pixel
+    ssd1306_command(SSD1306_PAGEADDR);
+    ssd1306_command(0);
+    ssd1306_command(4);  // 5 Pages für 40 Pixel (40/8 = 5)
+
+    ssd1306_data(display_buffer, sizeof(display_buffer));
+}
+
+// Pixel setzen
+void ssd1306_set_pixel(int16_t x, int16_t y, uint8_t color) {
+    if (x >= 0 && x < DISPLAY_WIDTH && y >= 0 && y < DISPLAY_HEIGHT) {
+        if (color) {
+            display_buffer[x + (y / 8) * DISPLAY_WIDTH] |= (1 << (y % 8));
+        } else {
+            display_buffer[x + (y / 8) * DISPLAY_WIDTH] &= ~(1 << (y % 8));
+        }
+    }
+}
+
+// Zeichen zeichnen
+void ssd1306_draw_char(int16_t x, int16_t y, char c) {
+    if (c < 32 || c > 90) c = 32; // Nur unterstützte Zeichen
+
+    const uint8_t* glyph = font5x7[c - 32];
+
+    for (int i = 0; i < 5; i++) {
+        uint8_t line = glyph[i];
+        for (int j = 0; j < 8; j++) {
+            if (line & 0x01) {
+                ssd1306_set_pixel(x + i, y + j, 1);
+            }
+            line >>= 1;
+        }
+    }
+}
+
+// String zeichnen
+void ssd1306_draw_string(int16_t x, int16_t y, const char* str) {
+    while (*str) {
+        ssd1306_draw_char(x, y, *str++);
+        x += 6; // 5 Pixel Breite + 1 Pixel Abstand
+    }
 }
